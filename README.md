@@ -1,13 +1,48 @@
-# concrete-strength-predictor
+🧱 Revisiting a Concrete Strength Regression – Streamlit App
 
-**Concrete Compressive Strength Predictor** — Streamlit app to predict concrete compressive strength (csMPa) using a saved regression model.
+This project builds a machine learning regression model to predict Concrete Compressive Strength (csMPa) using eight key ingredients and curing age.
+A trained model (Concrete_Strength_Model.pkl) is integrated into a Streamlit web application to allow interactive predictions.
 
-## What this repo contains
+📌 Project Structure
+│── streamlit_app.py
+│── Concrete_Strength_Model.pkl
+│── requirements.txt
+│── README.md
 
-- `streamlit_concrete_strength_app.py` — Streamlit app that loads `Concrete_Strength_Model.pkl` and provides single and batch predictions.
-- `Concrete_Strength_Model.pkl` — Your trained model (place this file in `/mnt/data/` or update `MODEL_PATH` in the script).
-- `requirements.txt` — Python dependencies to install.
-- `README.md` — This file.
+🧪 Dataset Overview
 
-## Suggested repository structure
+Dataset name: Revisiting a Concrete Strength Regression
+Target variable:
+
+csMPa – Concrete compressive strength (in MPa)
+
+Input features:
+
+cement
+
+slag
+
+flyash
+
+water
+
+superplasticizer
+
+coarseaggregate
+
+fineaggregate
+
+age
+
+🚀 Streamlit App Features
+
+✔️ Loads trained model (Concrete_Strength_Model.pkl)
+
+✔️ Takes 8 input features from user
+
+✔️ Predicts concrete strength (csMPa)
+
+✔️ Shows model type and pipeline steps
+
+✔️ Supports models trained using XGBoost, Scikit-Learn, Joblib, or Pickle
 
