@@ -38,7 +38,7 @@ def load_model_from_path(path: str):
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "rb") as f:
+        with open(Concrete_Strength_Model.pkl, "rb") as f:
             model = pickle.load(f)
         return model
     except Exception:
