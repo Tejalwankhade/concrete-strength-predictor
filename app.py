@@ -1,24 +1,44 @@
 """
-streamlit_concrete_strength_app.py
+Robust Streamlit app for predicting concrete compressive strength (csMPa).
 
-Streamlit app for predicting concrete compressive strength (csMPa).
+This version has a more robust model-loading routine that tries:
+ - joblib.load(file_path)
+ - pickle.loads(bytes)
+ - dill.loads(bytes)
+ - cloudpickle.loads(bytes)
 
-Usage:
-    1. Place your model pickle at /mnt/data/Concrete_Strength_Model.pkl (or change MODEL_PATH).
-    2. Or upload a model via the UI (supports pickle files containing sklearn pipeline or estimator).
-    3. Run: streamlit run streamlit_concrete_strength_app.py
+It also attempts to extract the estimator if the pickle contains a wrapper (dict/object).
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
 import io
 import os
-from typing import Optional
+import tempfile
+import traceback
+
+# Try to import optional libraries
+try:
+    import joblib
+except Exception:
+    joblib = None
+
+try:
+    import dill
+except Exception:
+    dill = None
+
+try:
+    import cloudpickle
+except Exception:
+    cloudpickle = None
+
+import pickle
+from typing import Any, Optional
 
 # --------- Config ----------
-st.set_page_config(page_title="Concrete Strength Predictor", layout="centered")
+st.set_page_config(page_title="Concrete Strength Predictor (robust loader)", layout="centered")
 MODEL_PATH = "/mnt/data/Concrete_Strength_Model.pkl"
 FEATURES = [
     "cement",
@@ -31,32 +51,187 @@ FEATURES = [
     "age",
 ]
 
-# --------- Helpers ----------
-@st.cache(allow_output_mutation=True)
-def load_model_from_path(path: str):
-    """Load a pickle model from disk. Returns None if not found or fails."""
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(Concrete_Strength_Model.pkl, "rb") as f:
-            model = pickle.load(f)
-        return model
-    except Exception:
+
+# --------- Robust loading helpers ----------
+def try_joblib_load(path: str):
+    if joblib is None:
+        raise RuntimeError("joblib not available in environment")
+    return joblib.load(path)
+
+
+def try_pickle_load_bytes(b: bytes):
+    return pickle.loads(b)
+
+
+def try_dill_load_bytes(b: bytes):
+    if dill is None:
+        raise RuntimeError("dill not available in environment")
+    return dill.loads(b)
+
+
+def try_cloudpickle_load_bytes(b: bytes):
+    if cloudpickle is None:
+        raise RuntimeError("cloudpickle not available in environment")
+    return cloudpickle.loads(b)
+
+
+def extract_estimator(obj: Any):
+    """
+    If obj is a wrapper like a dict or sklearn GridSearchCV, try to extract a usable estimator.
+    Returns estimator or None.
+    """
+    # common attributes / keys that might contain the estimator
+    candidates = []
+
+    if obj is None:
         return None
 
-@st.cache(allow_output_mutation=True)
-def load_model_from_bytes(b: bytes):
-    """Load a model from uploaded bytes (pickle)."""
-    try:
-        model = pickle.loads(b)
-        return model
-    except Exception:
-        return None
+    # If it's already has predict -> done
+    if hasattr(obj, "predict"):
+        return obj
 
+    # If it's a dict-like, check keys
+    try:
+        if isinstance(obj, dict):
+            candidates += ["model", "estimator", "best_estimator_", "pipeline", "clf"]
+            for k in candidates:
+                if k in obj and hasattr(obj[k], "predict"):
+                    return obj[k]
+    except Exception:
+        pass
+
+    # If object has attribute 'best_estimator_' (GridSearchCV)
+    for attr in ("best_estimator_", "estimator_", "model", "pipeline"):
+        try:
+            candidate = getattr(obj, attr, None)
+            if candidate is not None and hasattr(candidate, "predict"):
+                return candidate
+        except Exception:
+            continue
+
+    # Some wrappers store the sklearn object under .clf or .estimator
+    for attr in ("clf", "estimator"):
+        try:
+            candidate = getattr(obj, attr, None)
+            if candidate is not None and hasattr(candidate, "predict"):
+                return candidate
+        except Exception:
+            continue
+
+    return None
+
+
+def robust_load_from_path(path: str):
+    """
+    Try loading model from the filesystem using joblib then pickle.
+    Returns (model, errors_list)
+    """
+    errors = []
+    # 1) try joblib.load (file-based)
+    if joblib is not None:
+        try:
+            m = try_joblib_load(path)
+            est = extract_estimator(m)
+            return (est or m), errors
+        except Exception as e:
+            errors.append(f"joblib.load failed: {repr(e)}\n{traceback.format_exc()}")
+
+    # 2) fallback to pickle.load (file-based)
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        try:
+            m = try_pickle_load_bytes(raw)
+            est = extract_estimator(m)
+            return (est or m), errors
+        except Exception as e:
+            errors.append(f"pickle.loads (from file bytes) failed: {repr(e)}\n{traceback.format_exc()}")
+            # try dill/cloudpickle too
+            if dill is not None:
+                try:
+                    m = try_dill_load_bytes(raw)
+                    est = extract_estimator(m)
+                    return (est or m), errors
+                except Exception as ex:
+                    errors.append(f"dill.loads (from file bytes) failed: {repr(ex)}\n{traceback.format_exc()}")
+            if cloudpickle is not None:
+                try:
+                    m = try_cloudpickle_load_bytes(raw)
+                    est = extract_estimator(m)
+                    return (est or m), errors
+                except Exception as ex:
+                    errors.append(f"cloudpickle.loads (from file bytes) failed: {repr(ex)}\n{traceback.format_exc()}")
+    except Exception as e:
+        errors.append(f"Failed to read file bytes: {repr(e)}\n{traceback.format_exc()}")
+
+    return None, errors
+
+
+def robust_load_from_bytes(b: bytes):
+    """
+    Try multiple in-memory loaders. Returns (model_or_none, errors_list)
+    """
+    errors = []
+    # 1) plain pickle
+    try:
+        m = try_pickle_load_bytes(b)
+        est = extract_estimator(m)
+        return (est or m), errors
+    except Exception as e:
+        errors.append(f"pickle.loads failed: {repr(e)}\n{traceback.format_exc()}")
+
+    # 2) dill
+    if dill is not None:
+        try:
+            m = try_dill_load_bytes(b)
+            est = extract_estimator(m)
+            return (est or m), errors
+        except Exception as e:
+            errors.append(f"dill.loads failed: {repr(e)}\n{traceback.format_exc()}")
+
+    # 3) cloudpickle
+    if cloudpickle is not None:
+        try:
+            m = try_cloudpickle_load_bytes(b)
+            est = extract_estimator(m)
+            return (est or m), errors
+        except Exception as e:
+            errors.append(f"cloudpickle.loads failed: {repr(e)}\n{traceback.format_exc()}")
+
+    # 4) write to a temp file and try joblib.load if available
+    if joblib is not None:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
+                tmp.write(b)
+                tmp.flush()
+                tmp_path = tmp.name
+            try:
+                m = joblib.load(tmp_path)
+                est = extract_estimator(m)
+                # cleanup
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                return (est or m), errors
+            except Exception as e:
+                errors.append(f"joblib.load (from temp file) failed: {repr(e)}\n{traceback.format_exc()}")
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            errors.append(f"failed to write temp file for joblib attempt: {repr(e)}\n{traceback.format_exc()}")
+
+    return None, errors
+
+
+# --------- Prediction helpers ----------
 def predict_with_model(model, X: pd.DataFrame) -> np.ndarray:
-    """Run predict using model; if model has predict_proba fallback not used here."""
-    # If model is a pipeline/estimator conforming to sklearn API, .predict will work
-    return np.asarray(model.predict(X))
+    if hasattr(model, "predict"):
+        return np.asarray(model.predict(X))
+    raise RuntimeError("Loaded object does not have a .predict method. It's not a usable estimator.")
+
 
 def validate_input_df(df: pd.DataFrame) -> Optional[str]:
     missing = [c for c in FEATURES if c not in df.columns]
@@ -64,46 +239,67 @@ def validate_input_df(df: pd.DataFrame) -> Optional[str]:
         return f"Missing columns: {missing}"
     return None
 
+
 # --------- Load default model (if present) ----------
-default_model = load_model_from_path(MODEL_PATH)
+default_model, default_load_errors = None, []
+if os.path.exists(MODEL_PATH):
+    default_model, default_load_errors = robust_load_from_path(MODEL_PATH)
+
 
 # --------- App UI ----------
-st.title("🧱 Concrete Compressive Strength Predictor")
+st.title("🧱 Concrete Compressive Strength Predictor — Robust Loader")
 st.write(
-    "Predict the compressive strength (csMPa) of concrete from composition and age. "
-    "You can use the default model path or upload your own model (.pkl)."
+    "This app attempts several ways to load a model pickle (joblib/pickle/dill/cloudpickle). "
+    "If your model was created with a specific serializer, make sure that library is installed in the environment."
 )
 
 st.markdown("### Model")
-model_status_col, model_upload_col = st.columns([2, 3])
+col_status, col_upload = st.columns([2, 3])
 
-with model_status_col:
+with col_status:
     if default_model is not None:
-        st.success(f"Default model loaded from: `{MODEL_PATH}`")
+        st.success(f"Default model loaded from `{MODEL_PATH}`")
         st.write(f"Model type: `{type(default_model).__name__}`")
     else:
-        st.warning(f"No model found at `{MODEL_PATH}`. Upload a model below or place it there.")
+        st.warning(f"No usable model found at `{MODEL_PATH}`.")
+        if default_load_errors:
+            with st.expander("Why default model couldn't be loaded (details)"):
+                for e in default_load_errors:
+                    st.text(e.splitlines()[0])
+                st.write("Open expander to see full traces.")
+            with st.expander("Full loader trace for default model"):
+                for e in default_load_errors:
+                    st.code(e)
 
-with model_upload_col:
+with col_upload:
     uploaded_model_file = st.file_uploader(
-        "Upload model (.pkl) — optional (will override default model for this session)", type=["pkl", "pickle"]
+        "Upload model (.pkl/.joblib) — optional (will override default model for this session)", type=["pkl", "pickle", "joblib"]
     )
 
-# Use uploaded model if provided, else default
 model = default_model
+upload_errors = []
 if uploaded_model_file is not None:
+    # read bytes
     bytes_data = uploaded_model_file.read()
-    uploaded_model = load_model_from_bytes(bytes_data)
-    if uploaded_model is None:
-        st.error("Uploaded file couldn't be loaded as a pickle model.")
+    model, upload_errors = robust_load_from_bytes(bytes_data)
+    if model is None:
+        st.error("Uploaded file couldn't be loaded as a model. See details below.")
+        with st.expander("Upload load attempts and errors"):
+            for err in upload_errors:
+                st.code(err)
+        st.info(
+            "Common fixes: (1) Make sure the .pkl was created with standard joblib/pickle/dill/cloudpickle. "
+            "If you used a custom environment or custom classes, recreate the pipeline with a supported serializer "
+            "or include the custom class definitions in the environment."
+        )
     else:
-        model = uploaded_model
-        st.success("Uploaded model loaded and will be used for predictions.")
-        st.write(f"Uploaded model type: `{type(model).__name__}`")
+        st.success("Uploaded model loaded successfully.")
+        st.write(f"Model type: `{type(model).__name__}`")
+
 
 st.write("---")
 
-# Single-prediction inputs
+# Single prediction UI
 st.subheader("Single prediction")
 col1, col2 = st.columns(2)
 with col1:
@@ -149,9 +345,9 @@ with predict_col:
                 preds = predict_with_model(model, X)
                 pred_val = float(preds[0])
                 st.success(f"Predicted compressive strength: **{pred_val:.3f} MPa**")
-                st.info("Treat this as a model estimate. Validate on real-world data before using in production.")
             except Exception as e:
                 st.error(f"Prediction error: {e}")
+                st.exception(e)
 
 with info_col:
     st.write("Model info")
@@ -201,6 +397,7 @@ if csv_file is not None:
                     )
                 except Exception as e:
                     st.error(f"Error during batch prediction: {e}")
+                    st.exception(e)
 
 st.write("---")
 st.caption("App created by Tejal")
