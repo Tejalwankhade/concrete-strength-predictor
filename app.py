@@ -21,7 +21,7 @@ def load_model(path="Concrete_Strength_Model.pkl"):
 
 st.set_page_config(page_title="Concrete Strength Predictor", layout="centered")
 
-st.title("Concrete Strength Predictor (csMPa)")
+st.title("Concrete Strength Predictor (csMPa) by Tejal")
 st.write(
     "Enter the input features (in SI/appropriate units used during training) "
     "and click **Predict**. Make sure `Concrete_Strength_Model.pkl` is in the same folder."
